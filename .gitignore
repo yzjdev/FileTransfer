@@ -2,6 +2,7 @@
 .DS_Store
 
 /.gradle/
+/.gradle-user-home/
 /.idea/
 /build/
 /app/build/
@@ -9,6 +10,8 @@
 /.externalNativeBuild/
 /.cxx/
 /local.properties
+/keystore.properties
+/keystore/
 
 /app/src/androidTest/
 /app/src/test/
