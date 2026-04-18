@@ -86,7 +86,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.yzjdev.filetransfer.transfer.DiscoveredDevice
 import io.github.yzjdev.filetransfer.transfer.InstalledApk
 import io.github.yzjdev.filetransfer.transfer.ShareItem
@@ -95,7 +98,6 @@ import io.github.yzjdev.filetransfer.transfer.TransferRecord
 import io.github.yzjdev.filetransfer.transfer.TransferService
 import io.github.yzjdev.filetransfer.transfer.TransferStatus
 import io.github.yzjdev.filetransfer.transfer.TransferUiState
-import io.github.yzjdev.filetransfer.transfer.averageBytesPerSecond
 import io.github.yzjdev.filetransfer.transfer.durationMillis
 import io.github.yzjdev.filetransfer.transfer.loadInstalledApks
 import io.github.yzjdev.filetransfer.transfer.toReadableDuration
@@ -129,6 +131,7 @@ private fun FileTransferApp() {
     val uiState by service?.uiState?.collectAsStateWithLifecycle()
         ?: remember { mutableStateOf(TransferUiState()) }
     val prefs = remember(context) { context.getSharedPreferences("ui", Context.MODE_PRIVATE) }
+    val lifecycleOwner = LocalLifecycleOwner.current
     val sortedDevices = uiState.discoveredDevices.sortedWith(
         compareBy<DiscoveredDevice> { it.deviceName.lowercase() }.thenBy { it.ipAddress }
     )
@@ -138,10 +141,13 @@ private fun FileTransferApp() {
     var apkSearch by rememberSaveable { mutableStateOf("") }
     var currentPage by rememberSaveable { mutableStateOf(MainPage.HOME) }
     var pendingApkTarget by remember { mutableStateOf<PendingApkTarget?>(null) }
+    var apkListRefreshKey by remember { mutableStateOf(0) }
     val selectedDeviceIds = remember { mutableStateListOf<String>() }
     val selectedFiles = remember { mutableStateListOf<ShareItem>() }
     val selectedApks = remember { mutableStateListOf<InstalledApk>() }
-    val installedApksState = produceState<List<InstalledApk>?>(initialValue = null) {
+    val installedApksState = produceState<List<InstalledApk>?>(initialValue = null, showApkSheet, apkListRefreshKey) {
+        if (!showApkSheet) return@produceState
+        value = null
         value = withContext(Dispatchers.IO) { loadInstalledApks(context.packageManager) }
     }
 
@@ -163,6 +169,22 @@ private fun FileTransferApp() {
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
             notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    DisposableEffect(lifecycleOwner, showApkSheet) {
+        if (!showApkSheet) {
+            onDispose { }
+        } else {
+            val observer = LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_RESUME) {
+                    apkListRefreshKey++
+                }
+            }
+            lifecycleOwner.lifecycle.addObserver(observer)
+            onDispose {
+                lifecycleOwner.lifecycle.removeObserver(observer)
+            }
         }
     }
 
@@ -195,8 +217,8 @@ private fun FileTransferApp() {
                                 onValueChange = { apkSearch = it },
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true,
-                                label = { Text("搜索 APK") },
-                                placeholder = { Text("应用名或包名") },
+                                label = { Text("已安装应用") },
+                                placeholder = { Text("搜索应用名或包名") },
                             )
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 OutlinedButton(
@@ -258,7 +280,7 @@ private fun FileTransferApp() {
         if (apkPath != null) {
             AlertDialog(
                 onDismissRequest = { pendingApkTarget = null },
-                title = { Text("\u6253\u5f00 APK") },
+                title = { Text("打开安装包") },
                 text = { Text(target.label) },
                 confirmButton = {
                     TextButton(
@@ -267,7 +289,7 @@ private fun FileTransferApp() {
                             pendingApkTarget = null
                         },
                     ) {
-                        Text("\u5b89\u88c5")
+                        Text("安装")
                     }
                 },
                 dismissButton = {
@@ -278,10 +300,10 @@ private fun FileTransferApp() {
                                 pendingApkTarget = null
                             },
                         ) {
-                            Text("\u9009\u62e9\u6253\u5f00")
+                            Text("选择打开")
                         }
                         TextButton(onClick = { pendingApkTarget = null }) {
-                            Text("\u53d6\u6d88")
+                            Text("取消")
                         }
                     }
                 },
@@ -443,7 +465,7 @@ private fun HomePage(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
-                            "\u5df2\u9009\u8bbe\u5907 $selectedAvailableCount \u4e2a",
+                            "已选设备 $selectedAvailableCount 个",
                             style = MaterialTheme.typography.bodySmall,
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -451,7 +473,7 @@ private fun HomePage(
                                 onClick = onSelectAllDevices,
                                 enabled = sortedDevices.isNotEmpty(),
                             ) {
-                                Text(if (allOnlineDevicesSelected) "\u53d6\u6d88\u5168\u9009" else "\u5168\u9009")
+                                Text(if (allOnlineDevicesSelected) "取消全选" else "全选")
                             }
                             val sendSelectedEnabled = itemCount > 0 && selectedAvailableCount > 0
                             IconButton(
@@ -460,7 +482,7 @@ private fun HomePage(
                             ) {
                                 Icon(
                                     imageVector = Icons.Filled.Send,
-                                    contentDescription = "\u53d1\u9001\u5230\u5df2\u9009\u8bbe\u5907",
+                                    contentDescription = "发送到已选设备",
                                     tint = if (sendSelectedEnabled) {
                                         MaterialTheme.colorScheme.primary
                                     } else {
@@ -478,7 +500,7 @@ private fun HomePage(
         }
         if (sortedDevices.isEmpty()) {
             item {
-                EmptyCard("暂无设备，确保双方在同一局域网且服务已运行。")
+                EmptyCard("暂无设备，请确保双方在同一局域网且服务已运行。")
             }
         } else {
             items(sortedDevices, key = { it.deviceId }) { device ->
@@ -552,7 +574,7 @@ private fun StatusCard(
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text("服务", fontWeight = FontWeight.SemiBold)
                     Text(
-                        if (uiState.serviceRunning) "运行中" else "未连接",
+                        if (uiState.serviceRunning) "运行中" else "已停止",
                         color = MaterialTheme.colorScheme.primary,
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -598,11 +620,11 @@ private fun SelectionCard(
             Text("待发送", style = MaterialTheme.typography.titleSmall)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Button(onClick = onPickFiles) { Text("选文件") }
-                OutlinedButton(onClick = onPickApks) { Text("选 APK") }
+                OutlinedButton(onClick = onPickApks) { Text("选应用") }
             }
             if (selectedFiles.isNotEmpty()) {
                 Text(
-                    "文件 ${selectedFiles.size} 个 · ${selectedFiles.sumOf { it.sizeBytes }.toReadableSize()}",
+                    "文件 ${selectedFiles.size} 项 · ${selectedFiles.sumOf { it.sizeBytes }.toReadableSize()}",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 CompactChipFlow(labels = selectedFiles.take(6).map { it.displayName })
@@ -611,14 +633,14 @@ private fun SelectionCard(
             if (selectedApks.isNotEmpty()) {
                 HorizontalDivider()
                 Text(
-                    "APK ${selectedApks.size} 个 · ${selectedApks.sumOf { it.sizeBytes }.toReadableSize()}",
+                    "安装包 ${selectedApks.size} 项 · ${selectedApks.sumOf { it.sizeBytes }.toReadableSize()}",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 SelectedApkRow(items = selectedApks)
-                TextButton(onClick = onClearApks) { Text("清空 APK") }
+                TextButton(onClick = onClearApks) { Text("清空应用") }
             }
             if (selectedFiles.isEmpty() && selectedApks.isEmpty()) {
-                Text("先选择文件或 APK，再对目标设备发送。", style = MaterialTheme.typography.bodySmall)
+                Text("先选择文件或安装包，再选择目标设备发送。", style = MaterialTheme.typography.bodySmall)
             }
         }
     }
@@ -651,17 +673,17 @@ private fun DeviceCard(
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Text(
-                        "${((System.currentTimeMillis() - device.lastSeenAt) / 1000L).coerceAtLeast(0)} 秒前发现",
+                        "${((System.currentTimeMillis() - device.lastSeenAt) / 1000L).coerceAtLeast(0)} 秒前",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
                 Spacer(Modifier.width(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     OutlinedButton(onClick = onToggleSelected) {
-                        Text(if (selected) "\u5df2\u9009" else "\u9009\u62e9")
+                        Text(if (selected) "已选" else "选择")
                     }
                     Button(onClick = onSend, enabled = itemCount > 0) {
-                        Text(if (itemCount > 0) "\u53d1\u9001" else "\u5f85\u9009")
+                        Text(if (itemCount > 0) "发送" else "待选")
                     }
                 }
             }
@@ -682,6 +704,11 @@ private fun TransferRecordCard(
     val progress = when {
         record.bytesTotal <= 0L -> 0f
         else -> (record.bytesTransferred.toFloat() / record.bytesTotal.toFloat()).coerceIn(0f, 1f)
+    }
+    val speedLine = if (record.status == TransferStatus.RUNNING) {
+        "当前 ${record.currentBytesPerSecond.toReadableSize()}/s · 时长 ${record.durationMillis(nowMillis).toReadableDuration()}"
+    } else {
+        "峰值 ${record.peakBytesPerSecond.toReadableSize()}/s · 最低 ${record.minBytesPerSecond.toReadableSize()}/s · 平均 ${record.averageBytesPerSecondValue.toReadableSize()}/s"
     }
     val direction = if (record.direction == TransferDirection.SEND) "发送" else "接收"
     val statusText = when (record.status) {
@@ -708,9 +735,15 @@ private fun TransferRecordCard(
                 style = MaterialTheme.typography.bodySmall,
             )
             Text(
-                "\u901f\u7387 ${record.averageBytesPerSecond(nowMillis).toReadableSize()}/s \u00b7 \u65f6\u957f ${record.durationMillis(nowMillis).toReadableDuration()}",
+                speedLine,
                 style = MaterialTheme.typography.bodySmall,
             )
+            if (record.status != TransferStatus.RUNNING) {
+                Text(
+                    "时长 ${record.durationMillis(nowMillis).toReadableDuration()}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
             Text(record.message, style = MaterialTheme.typography.bodySmall)
             if (record.itemNames.isNotEmpty()) {
@@ -1092,16 +1125,32 @@ private fun Context.installApkTarget(path: String) {
 
 private fun Context.openTransferTarget(path: String) {
     val uri = path.toTransferUri(this) ?: return
-    val mimeType = contentResolver.getType(uri)
-        ?: android.webkit.MimeTypeMap.getSingleton()
-            .getMimeTypeFromExtension(path.substringAfterLast('.', "").lowercase())
-        ?: "*/*"
-    val intent = Intent(Intent.ACTION_VIEW).apply {
+    val isApk = path.endsWith(".apk", ignoreCase = true)
+    val mimeType = when {
+        isApk -> "*/*"
+        else -> contentResolver.getType(uri)
+            ?: android.webkit.MimeTypeMap.getSingleton()
+                .getMimeTypeFromExtension(path.substringAfterLast('.', "").lowercase())
+            ?: "*/*"
+    }
+    val openIntent = Intent(Intent.ACTION_VIEW).apply {
         setDataAndType(uri, mimeType)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
-    startActivity(Intent.createChooser(intent, "\u9009\u62e9\u5e94\u7528").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    val chooserIntent = Intent.createChooser(openIntent, "选择应用").apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    if (isApk) {
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "*/*"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        chooserIntent.putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(shareIntent))
+    }
+    startActivity(chooserIntent)
 }
 
 private fun String.toTransferUri(context: Context): Uri? {
@@ -1123,5 +1172,5 @@ private fun Context.openFileWithApp(file: File) {
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
-    startActivity(Intent.createChooser(intent, "选择应用").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    startActivity(Intent.createChooser(intent, "选择打开方式").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
 }

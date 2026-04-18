@@ -63,4 +63,3 @@ Android/data/<package-name>/files/Download/received
 - 不支持断点续传
 - 未做加密和身份校验
 - 依赖 UDP 广播，部分网络环境下可能无法发现设备
-
